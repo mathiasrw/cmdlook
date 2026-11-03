@@ -1,0 +1,44 @@
+name: CI-test
+
+on:
+    push:
+        branches: [main]
+    # Every PR, also one that is based on another PR
+    pull_request:
+
+jobs:
+    node:
+        runs-on: ${{ matrix.os }}
+
+        strategy:
+            fail-fast: false
+            matrix:
+                os: [ubuntu-latest, macos-latest]
+                node-version: [12.x, 14.x, 16.x, 18.x, 20.x, 22.x, 24.x, latest]
+                # macos-latest runs on Apple Silicon, and Node before 16 has no build for it
+                exclude:
+                    - os: macos-latest
+                      node-version: 12.x
+                    - os: macos-latest
+                      node-version: 14.x
+
+        steps:
+            - uses: actions/checkout@v7
+            - name: Use Node ${{ matrix.node-version }}
+              uses: actions/setup-node@v7
+              with:
+                  node-version: ${{ matrix.node-version }}
+            - run: WAIT=1.5 bash test/cli.sh
+
+    bun:
+        runs-on: ${{ matrix.os }}
+
+        strategy:
+            fail-fast: false
+            matrix:
+                os: [ubuntu-latest, macos-latest]
+
+        steps:
+            - uses: actions/checkout@v7
+            - uses: oven-sh/setup-bun@v2
+            - run: WAIT=1.5 RUNNER=bun bash test/cli.sh

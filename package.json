@@ -13,11 +13,19 @@
 	"bin": {
 		"cmdlook": "./index.js"
 	},
+	"files": [
+		"index.js"
+	],
+	"engines": {
+		"node": ">=12"
+	},
 	"scripts": {
 		"format": "bunx prettier . --write",
+		"test": "bash test/cli.sh",
+		"is-git-clean": "(git diff --quiet --exit-code --cached && git diff --quiet --exit-code) || (echo Please commit or stash changes && exit 1)",
 		"release": "yarn version",
-		"prerelease": "# bun install && bun format && bun run test",
-		"postrelease": "npm publish && git push && git push --tags && echo \"Successfully released version $npm_package_version\""
+		"prerelease": "yarn is-git-clean && yarn test",
+		"postrelease": "npm publish && git push && git push --tags && echo \"Successfully released version $npm_package_version\" && (open https://github.com/mathiasrw/cmdlook/releases || 1)"
 	},
 	"prettier": {
 		"useTabs": true,

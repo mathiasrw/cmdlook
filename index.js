@@ -1,27 +1,17 @@
-#!/usr/bin/env bun
+#!/usr/bin/env node
+'use strict';
 
-// Check if Bun is available globally
-if (typeof globalThis.Bun === 'undefined') {
-	console.error('Error: Bun is required but not found.');
-	console.error('Please install Bun to use this tool:');
-	console.error('  curl -fsSL https://bun.sh/install | bash');
-	console.error('  export BUN_INSTALL="$HOME/.bun"');
-	console.error('  export PATH="$BUN_INSTALL/bin:$PATH"');
-	process.exit(1);
-}
+// Watch a folder, a file or a glob, and run a command when something changes.
+// Plain Node APIs in CommonJS, so it runs on Node 12 and newer, and on Bun.
 
-import {watch, existsSync, statSync} from 'fs';
-import {Glob} from 'bun';
-import {resolve, join, relative} from 'path';
+const fs = require('fs');
+const path = require('path');
+const {spawn} = require('child_process');
 
-const target = process.argv[2] || '.';
+const [target, ...cmdArgs] = process.argv.slice(2);
 
-// Check if target is a glob pattern (contains * or {)
-const isGlob = target.includes('*') || target.includes('{');
-
-const cmdArgs = process.argv.slice(3);
-if (cmdArgs.length === 0) {
-	console.error('Please provide a command to run:');
+if (!target || cmdArgs.length === 0) {
+	console.error('Please provide what to watch and a command to run:');
 	console.error('  cmdlook <target> <command> <args...>');
 	console.error('  cmdlook . bun test');
 	console.error('  cmdlook ./src bun run build');
@@ -34,84 +24,151 @@ if (cmdArgs.length === 0) {
 	process.exit(1);
 }
 
-let watchPaths = [];
+// One argument is a shell command as it is, like 'bun test && bun run build'.
+// Several arguments are quoted one by one, so an argument with a space in it stays one argument.
+const quote = arg => (/^[\w@%+=:,./-]+$/.test(arg) ? arg : `'${arg.replace(/'/g, `'\\''`)}'`);
+const command = cmdArgs.length === 1 ? cmdArgs[0] : cmdArgs.map(quote).join(' ');
 
-if (!isGlob) {
-	if (!existsSync(target) || !statSync(target).isDirectory()) {
-		console.error(`Error: '${target}' does not exist or is not a directory.`);
-		process.exit(1);
-	}
-	watchPaths = [target];
+// An existing file is a file and an existing folder is a folder. Everything else is a glob.
+const found = statOrNull(target);
+const watchers = [];
+
+if (found && found.isFile()) {
+	// A file is used as it is, also when its name has glob characters in it.
+	// The folder is watched, so a file saved by writing a new one and renaming it is still seen.
+	const file = path.resolve(target);
+	watch(path.dirname(file), false, changed => changed === file);
+} else if (found && found.isDirectory()) {
+	watch(target, true, () => true);
 } else {
-	const glob = new Glob(target);
-	const matches = Array.from(glob.scanSync({absolute: false, onlyFiles: true}));
+	const pattern = target.replace(/^\.\//, '');
+	const glob = globToRegex(pattern);
+	const matches = walk(globBase(pattern)).filter(file => glob.test(file));
 
 	if (matches.length === 0) {
 		console.error(`Error: No files found matching pattern '${target}'.`);
 		process.exit(1);
 	}
 
-	// Get unique parent directories of the matching files
-	const uniqueDirs = new Set();
-	for (const match of matches) {
-		const parentDir = match.split('/').slice(0, -1).join('/') || '.';
-		uniqueDirs.add(parentDir);
-	}
-
-	watchPaths = Array.from(uniqueDirs);
+	// Watch the folders of the matching files
+	const dirs = new Set(matches.map(file => path.dirname(file)));
+	dirs.forEach(dir =>
+		watch(dir, false, changed => glob.test(path.relative(process.cwd(), changed)))
+	);
 }
 
-let isRunning = false;
-let plzRun = false;
+let running = false;
+let again = false;
+let timer;
 
-const runCommand = async () => {
-	if (isRunning || !plzRun) return;
+// Editors often fire a few events for one save, so wait for it to settle and run once
+function onChange() {
+	clearTimeout(timer);
+	timer = setTimeout(run, 50);
+}
 
-	isRunning = true;
-	plzRun = false;
-
-	try {
-		const proc = Bun.spawn(['sh', '-c', cmdArgs.join(' ')], {stdout: 'inherit', stderr: 'inherit'});
-		await proc.exited;
-	} catch (error) {
-		console.error('Command failed:', error.message);
-		process.exit(1);
-	} finally {
-		isRunning = false;
-		runCommand();
+// A change while the command runs gives one more run when it is done, no matter how many files changed
+function run() {
+	if (running) {
+		again = true;
+		return;
 	}
-};
-
-const watchers = [];
-
-// Create watchers for all parent folders
-const glob = isGlob ? new Glob(target) : null;
-
-for (const watchPath of watchPaths) {
-	const watcher = watch(watchPath, {recursive: !isGlob}, (event, filename) => {
-		if (filename) {
-			// For glob patterns, only trigger if the changed file matches the pattern
-			if (isGlob) {
-				const fullPath = resolve(watchPath, filename);
-				const relPath = relative(process.cwd(), fullPath);
-				if (glob.match(relPath)) {
-					plzRun = true;
-					runCommand();
-				}
-			} else {
-				// For directory watching, trigger on any change
-				plzRun = true;
-				runCommand();
-			}
+	running = true;
+	spawn('sh', ['-c', command], {stdio: 'inherit'}).on('exit', () => {
+		running = false;
+		if (again) {
+			again = false;
+			run();
 		}
 	});
-	watchers.push(watcher);
+}
+
+// Watch a folder, and call onChange when a path in it passes the check.
+// Node before 19.1 can not watch subfolders on Linux, so there each folder there is now gets its own watcher.
+function watch(dir, recursive, check) {
+	const nodeMajor = Number(process.versions.node.split('.')[0]);
+	const canRecurse = process.platform !== 'linux' || nodeMajor >= 20 || process.versions.bun;
+	const dirs = recursive && !canRecurse ? [dir].concat(walk(dir, true)) : [dir];
+
+	dirs.forEach(d => {
+		const options = {recursive: recursive && !!canRecurse};
+		watchers.push(
+			fs.watch(d, options, (event, name) => {
+				if (name && check(path.resolve(d, String(name)))) onChange();
+			})
+		);
+	});
+}
+
+// The files (or only the folders) under a folder. Names starting with . are left out, like Bun's glob does.
+function walk(dir, onlyDirs) {
+	let found = [];
+	let entries = [];
+	try {
+		entries = fs.readdirSync(dir, {withFileTypes: true});
+	} catch (e) {} // Not there
+	entries.forEach(entry => {
+		if (entry.name[0] === '.') return;
+		const p = path.join(dir, entry.name);
+		if (entry.isDirectory()) found = found.concat(onlyDirs ? [p] : [], walk(p, onlyDirs));
+		else if (!onlyDirs) found.push(p);
+	});
+	return found;
+}
+
+// The folder before the first part with glob characters, so the search for files does not start higher than needed
+function globBase(pattern) {
+	const parts = pattern.split('/');
+	const i = parts.findIndex(part => /[*?[{]/.test(part));
+	return parts.slice(0, i).join('/') || '.';
+}
+
+// A glob as a regex. ** is any number of folders, * and ? stay within one folder, {a,b} is a or b, and [abc] is one of the characters.
+function globToRegex(glob) {
+	let re = '';
+	let braces = 0;
+	for (let i = 0; i < glob.length; i++) {
+		const c = glob[i];
+		const end = c === '[' ? glob.indexOf(']', i + 2) : -1;
+		if (glob.startsWith('**/', i)) {
+			re += '(?:[^/]*/)*';
+			i += 2;
+		} else if (glob.startsWith('**', i)) {
+			re += '.*';
+			i += 1;
+		} else if (c === '*') re += '[^/]*';
+		else if (c === '?') re += '[^/]';
+		else if (c === '{') {
+			re += '(?:';
+			braces++;
+		} else if (c === '}' && braces) {
+			re += ')';
+			braces--;
+		} else if (c === ',' && braces) re += '|';
+		else if (end > 0) {
+			re +=
+				'[' +
+				glob
+					.slice(i + 1, end)
+					.replace(/^!/, '^')
+					.replace(/\\/g, '\\\\') +
+				']';
+			i = end;
+		} else re += c.replace(/[.+^$()|\\[\]{}]/g, '\\$&');
+	}
+	return new RegExp('^' + re + '$');
+}
+
+function statOrNull(p) {
+	try {
+		return fs.statSync(p);
+	} catch (e) {
+		return null;
+	}
 }
 
 process.on('SIGINT', () => {
-	for (const watcher of watchers) {
-		watcher.close();
-	}
+	watchers.forEach(watcher => watcher.close());
 	console.log('');
 	process.exit(0);
 });
