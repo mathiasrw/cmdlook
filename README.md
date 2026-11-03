@@ -36,9 +36,9 @@ It runs on Node 12 and newer, and on Bun.
 
 ## Usage
 
-Just use the command line arguments as you would normally - don't put it all in quotes. Each argument stays one argument, also when it has a space in it.
+Just use the command line arguments as you would normally - don't put it all in quotes. The arguments are joined with spaces and run in `sh`, so `cmdlook . 'bun test && bun run build'` works too.
 
-If the command is a single argument, it is run as it is in `sh`, so `cmdlook . 'bun test && bun run build'` works too.
+If an argument has a space in it, put the whole command in quotes, like `cmdlook A.file 'git commit -am "fix the bug"'`.
 
 The first parameter can be a file, a folder or a glob. A file that exists is used as it is, also when its name has glob characters in it. A folder that exists is watched with all its subfolders. Everything else is a glob.
 

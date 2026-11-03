@@ -24,10 +24,8 @@ if (!target || cmdArgs.length === 0) {
 	process.exit(1);
 }
 
-// One argument is a shell command as it is, like 'bun test && bun run build'.
-// Several arguments are quoted one by one, so an argument with a space in it stays one argument.
-const quote = arg => (/^[\w@%+=:,./-]+$/.test(arg) ? arg : `'${arg.replace(/'/g, `'\\''`)}'`);
-const command = cmdArgs.length === 1 ? cmdArgs[0] : cmdArgs.map(quote).join(' ');
+// The arguments are joined with spaces and run in sh, so 'bun test && bun run build' works too
+const command = cmdArgs.join(' ');
 
 // An existing file is a file and an existing folder is a folder. Everything else is a glob.
 const found = statOrNull(target);

@@ -61,8 +61,11 @@ check 'a file with * in its name is used as it is' 'ran' "$(out)"
 reset; start A.file echo ran; echo saved > .tmp && mv .tmp A.file; stop
 check 'a file saved by renaming a new file over it' 'ran' "$(out)"
 
-reset; start A.file echo 'two  words' "it's"; echo x >> A.file; stop
-check 'several arguments keep their quoting' "two  words it's" "$(out)"
+reset; start A.file echo 'two  words'; echo x >> A.file; stop
+check 'the arguments are joined with spaces' "two words" "$(out)"
+
+reset; start A.file 'echo "two  words"'; echo x >> A.file; stop
+check 'quotes inside one argument are kept' "two  words" "$(out)"
 
 reset; start A.file 'echo one && echo two'; echo x >> A.file; stop
 check 'one argument is a shell command' $'one\ntwo' "$(out)"
